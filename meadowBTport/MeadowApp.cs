@@ -18,7 +18,10 @@ namespace meadowBTport
 
         readonly string packetCharcteristicName = "5a5a5a5669ab4a49a2f2de5b292458f3";
 
-        //RgbPwmLed onboardLed;
+        RgbPwmLed onboardLed;                          //onboard RGB LED, toggled red/green as a "packet sent" heartbeat
+        
+        bool LEDisRed = false;                         //tracks heartbeat LED color so we can alternate it
+
         ISerialPort serialPort;
         string milliVolts00 = "0000", milliVolts01 = "0000", milliVolts02 = "0000",
                milliVolts03 = "0000", milliVolts04 = "0000", milliVolts05 = "0000";
@@ -57,6 +60,13 @@ namespace meadowBTport
         public override async Task Initialize()
         {
             Resolver.Log.Info("Initialize hardware...");
+
+            //set up the onboard RGB LED (common-anode wiring on the F7 Feather)
+            onboardLed = new RgbPwmLed(
+                redPwmPin: Device.Pins.OnboardLedRed,
+                greenPwmPin: Device.Pins.OnboardLedGreen,
+                bluePwmPin: Device.Pins.OnboardLedBlue,
+                CommonType.CommonAnode);
 
             bleTreeDefinition = GetDefinition();
             if (Device.BluetoothAdapter == null)
@@ -277,6 +287,16 @@ namespace meadowBTport
                             Resolver.Log.Info(outBTpacket);
                             var buffer = Encoding.UTF8.GetBytes(outPacket);
                             serialPort.Write(buffer);
+                            if (LEDisRed)
+                            {
+                                onboardLed.SetColor(Color.Green);
+                                LEDisRed = false;
+                            }
+                            else
+                            {
+                                onboardLed.SetColor(Color.Red);
+                                LEDisRed = true;
+                            }
                             await Task.Delay(packetTime);
 
                             TXstate = 0; //reset the state when the whole packet is sent
