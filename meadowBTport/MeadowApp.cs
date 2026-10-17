@@ -1,18 +1,17 @@
-﻿using Meadow;
-using Meadow.Devices;
-using Meadow.Foundation;
-using Meadow.Foundation.Leds;
-using Meadow.Hardware;
-using Meadow.Units;
-using System;
+﻿using System;
 using System.Text;
-using System.Threading;
 using System.Threading.Tasks;
+using Meadow;
+using Meadow.Devices;
+using Meadow.Foundation.Leds;
 using Meadow.Gateways.Bluetooth;
+using Meadow.Hardware;
+using Meadow.Peripherals.Leds;
+using Meadow.Units;
 
 namespace meadowBTport
 {
-    public class MeadowApp : App<F7Micro, MeadowApp>
+    public class MeadowApp : App<F7FeatherV2>
     {
         Definition bleTreeDefinition;
         CharacteristicString packetCharacteristic;
@@ -21,14 +20,15 @@ namespace meadowBTport
 
         //RgbPwmLed onboardLed;
         ISerialPort serialPort;
-        string milliVolts00, milliVolts01, milliVolts02, milliVolts03, milliVolts04, milliVolts05;
+        string milliVolts00 = "0000", milliVolts01 = "0000", milliVolts02 = "0000",
+               milliVolts03 = "0000", milliVolts04 = "0000", milliVolts05 = "0000";
 
-        IAnalogInputPort analogIn00;
-        IAnalogInputPort analogIn01;
-        IAnalogInputPort analogIn02;
-        IAnalogInputPort analogIn03;
-        IAnalogInputPort analogIn04;
-        IAnalogInputPort analogIn05;
+        IObservableAnalogInputPort analogIn00;
+        IObservableAnalogInputPort analogIn01;
+        IObservableAnalogInputPort analogIn02;
+        IObservableAnalogInputPort analogIn03;
+        IObservableAnalogInputPort analogIn04;
+        IObservableAnalogInputPort analogIn05;
 
         IDigitalInputPort inputPortD02;
         IDigitalInputPort inputPortD03;
@@ -40,7 +40,6 @@ namespace meadowBTport
         IDigitalOutputPort outputPortD09;
 
         private int packetNumber;
-        private int milliVolts;
         private int analogPin;
         private int digitalPin;
         private int packetLen;
@@ -49,60 +48,62 @@ namespace meadowBTport
         private int checkSum = 0;
         private int index = 0;
         private int TXstate = 0;
-        private int RXstate = 0;
-        private int RXindex = 0;
         private String outPacket = "###P##AN00AN01AN02AN03AN04AN05bbbbCHKrn";
         private String outBTpacket = "###P##AN00AN01AN02AN03AN04AN05bbbbCHKrn";
         private String inPacket;
         private int packetTime = 1000;
         private bool sendBTpacket = true;
 
-        public MeadowApp()
+        public override async Task Initialize()
         {
-            Initialize();
-            SendLoop();
-        }
-
-        void Initialize()
-        {
-            Console.WriteLine("Initialize hardware...");
+            Resolver.Log.Info("Initialize hardware...");
 
             bleTreeDefinition = GetDefinition();
-            Device.BluetoothAdapter.StartBluetoothServer(bleTreeDefinition);
+            if (Device.BluetoothAdapter == null)
+            {
+                Resolver.Log.Error("Bluetooth adapter (ESP32 coprocessor) not available.");
+            }
+            else
+            {
+                Device.BluetoothAdapter.StartBluetoothServer(bleTreeDefinition);
+            }
             packetCharacteristic.ValueSet += PacketCharacteristic_ValueSet;
 
-            //onboardLed = new RgbPwmLed(device: Device,
+            //onboardLed = new RgbPwmLed(
             //    redPwmPin: Device.Pins.OnboardLedRed,
             //    greenPwmPin: Device.Pins.OnboardLedGreen,
             //    bluePwmPin: Device.Pins.OnboardLedBlue,
-            //    3.3f, 3.3f, 3.3f,
-            //    Meadow.Peripherals.Leds.IRgbLed.CommonType.CommonAnode);
+            //    CommonType.CommonAnode);
             inPacket = "";
-            analogIn00 = Device.CreateAnalogInputPort(Device.Pins.A00);
-            analogIn01 = Device.CreateAnalogInputPort(Device.Pins.A01);
-            analogIn02 = Device.CreateAnalogInputPort(Device.Pins.A02);
-            analogIn03 = Device.CreateAnalogInputPort(Device.Pins.A03);
-            analogIn04 = Device.CreateAnalogInputPort(Device.Pins.A04);
-            analogIn05 = Device.CreateAnalogInputPort(Device.Pins.A05);
-            inputPortD02 = Device.CreateDigitalInputPort(Device.Pins.D02);
-            inputPortD03 = Device.CreateDigitalInputPort(Device.Pins.D03);
-            inputPortD04 = Device.CreateDigitalInputPort(Device.Pins.D04);
-            inputPortD05 = Device.CreateDigitalInputPort(Device.Pins.D05);
+
+            // 5 samples averaged, 40 ms apart, 3.3 V reference (same as the original defaults)
+            analogIn00 = Device.CreateAnalogInputPort(Device.Pins.A00, 5);
+            analogIn01 = Device.CreateAnalogInputPort(Device.Pins.A01, 5);
+            analogIn02 = Device.CreateAnalogInputPort(Device.Pins.A02, 5);
+            analogIn03 = Device.CreateAnalogInputPort(Device.Pins.A03, 5);
+            analogIn04 = Device.CreateAnalogInputPort(Device.Pins.A04, 5);
+            analogIn05 = Device.CreateAnalogInputPort(Device.Pins.A05, 5);
+            inputPortD02 = Device.CreateDigitalInputPort(Device.Pins.D02, ResistorMode.Disabled);
+            inputPortD03 = Device.CreateDigitalInputPort(Device.Pins.D03, ResistorMode.Disabled);
+            inputPortD04 = Device.CreateDigitalInputPort(Device.Pins.D04, ResistorMode.Disabled);
+            inputPortD05 = Device.CreateDigitalInputPort(Device.Pins.D05, ResistorMode.Disabled);
             outputPortD06 = Device.CreateDigitalOutputPort(Device.Pins.D06, false);
             outputPortD07 = Device.CreateDigitalOutputPort(Device.Pins.D07, false);
             outputPortD08 = Device.CreateDigitalOutputPort(Device.Pins.D08, false);
             outputPortD09 = Device.CreateDigitalOutputPort(Device.Pins.D09, false);
-            Thread.Sleep(200);
+            await Task.Delay(200);
             outputPortD06.State = true;
-            Thread.Sleep(200);
+            await Task.Delay(200);
             outputPortD08.State = true;
-            Thread.Sleep(200);
+            await Task.Delay(200);
             outputPortD07.State = true;
-            Thread.Sleep(200);
+            await Task.Delay(200);
             outputPortD09.State = true;
-            serialPort = Device.CreateSerialPort(Device.SerialPortNames.Com1, 115200);
+
+            serialPort = Device.CreateSerialPort(Device.PlatformOS.GetSerialPortName("COM1"), 115200);
             serialPort.Open();
             serialPort.DataReceived += SerialPort_DataReceived;
+
             analogIn00.Updated += AnalogIn00_Updated;
             analogIn01.Updated += AnalogIn01_Updated;
             analogIn02.Updated += AnalogIn02_Updated;
@@ -116,8 +117,15 @@ namespace meadowBTport
             analogIn03.StartUpdating(TimeSpan.FromMilliseconds(timeSpanInMilliSec));
             analogIn04.StartUpdating(TimeSpan.FromMilliseconds(timeSpanInMilliSec));
             analogIn05.StartUpdating(TimeSpan.FromMilliseconds(timeSpanInMilliSec));
-            analogIn05.StartUpdating(TimeSpan.FromMilliseconds(timeSpanInMilliSec));
 
+            await base.Initialize();
+        }
+
+        public override Task Run()
+        {
+            Resolver.Log.Info("Run...");
+
+            return SendLoop();
         }
 
         private void PacketCharacteristic_ValueSet(ICharacteristic c, object data)
@@ -152,33 +160,29 @@ namespace meadowBTport
 
         private void AnalogIn00_Updated(object sender, IChangeResult<Voltage> e)
         {
-            //Console.WriteLine(e.New.Millivolts);
+            //Resolver.Log.Info($"{e.New.Millivolts}");
             int milliVolts = Convert.ToInt32(e.New.Millivolts);
             milliVolts00 = milliVolts.ToString("D4");
-            //Console.WriteLine(milliVolts00);
+            //Resolver.Log.Info(milliVolts00);
 
         }
         private void AnalogIn01_Updated(object sender, IChangeResult<Voltage> e)
         {
-            //Console.WriteLine(e.New.Millivolts);
             int miliVolts = Convert.ToInt32(e.New.Millivolts);
             milliVolts01 = miliVolts.ToString("D4");
         }
         private void AnalogIn02_Updated(object sender, IChangeResult<Voltage> e)
         {
-            //Console.WriteLine(e.New.Millivolts);
             int miliVolts = Convert.ToInt32(e.New.Millivolts);
             milliVolts02 = miliVolts.ToString("D4");
         }
         private void AnalogIn03_Updated(object sender, IChangeResult<Voltage> e)
         {
-            //Console.WriteLine(e.New.Millivolts);
             int miliVolts = Convert.ToInt32(e.New.Millivolts);
             milliVolts03 = miliVolts.ToString("D4");
         }
         private void AnalogIn04_Updated(object sender, IChangeResult<Voltage> e)
         {
-            //Console.WriteLine(e.New.Millivolts);
             int miliVolts = Convert.ToInt32(e.New.Millivolts);
             milliVolts04 = miliVolts.ToString("D4");
         }
@@ -194,7 +198,7 @@ namespace meadowBTport
             int calChkSum = 0;
             int recChkSum = 0;
 
-            //Console.WriteLine(serialPort.BytesToRead);
+            //Resolver.Log.Info($"{serialPort.BytesToRead}");
             byte[] response = new byte[12];
             this.serialPort.Read(response, 0, 12);
             //serialPort.Write(response);
@@ -206,39 +210,33 @@ namespace meadowBTport
                 {
                     calChkSum += response[i];
                 }
-                //Console.WriteLine(calChkSum);
                 recChkSum = (response[7] - 0x30) * 100 + (response[8] - 0x30) * 10 + (response[9] - 0x30);
-                //Console.WriteLine(recChkSum);
                 if (calChkSum == recChkSum)
                 {
-                    outputPortD06.State = response[3] == 0x31 ? true : false;
-                    outputPortD07.State = response[4] == 0x31 ? true : false;
-                    outputPortD08.State = response[5] == 0x31 ? true : false;
-                    outputPortD09.State = response[6] == 0x31 ? true : false;
-                    //Console.WriteLine(outputPortD09.State);
+                    outputPortD06.State = response[3] == 0x31;
+                    outputPortD07.State = response[4] == 0x31;
+                    outputPortD08.State = response[5] == 0x31;
+                    outputPortD09.State = response[6] == 0x31;
                 }
             }
         }
 
-        private void SendLoop()
+        private async Task SendLoop()
         {
-            Console.WriteLine("Sending Data");
+            Resolver.Log.Info("Sending Data");
 
             while (true)
             {
                 switch (TXstate)
                 {
                     case 0: // begin making output packet
-                        //Console.WriteLine(outPacket);
-
                         outPacket = "###"; //header
                         checkSum = 0;
                         index = 0;
                         analogPin = 0;
-                        //digitalPin=0;
-                        digitalPin = digitalInReq - 1;//start with Most significant pin 
+                        digitalPin = digitalInReq - 1;//start with Most significant pin
                         outPacket += packetNumber++.ToString("D3"); //inc packet number add to outPacket string
-                        packetNumber %= 1000;   //packetnumber rollover code 
+                        packetNumber %= 1000;   //packetnumber rollover code
                         TXstate = 1;  //move to next state
                         break;
                     case 1: // continue making output packet and do analog at the same time
@@ -256,19 +254,8 @@ namespace meadowBTport
 
                         foreach (bool state in currentState)
                         {
-                            string outString = " ";
-                            if (state)
-                            {
-                                outString = "1";
-                            }
-                            else
-                            {
-                                outString = "0";
-                            }
-                            outPacket += outString;
+                            outPacket += state ? "1" : "0";
                         }
-                        //Console.WriteLine(outPacket);
-                        //Thread.Sleep(1000);
                         TXstate = 3;//move to next state when all input complete
                         break;
                     case 3:
@@ -280,21 +267,17 @@ namespace meadowBTport
                         outPacket += checkSum.ToString("D3");
                         outPacket += "\r\n";// add carriage return, line feed
                         packetLen = outPacket.Length;//set packet length to send
-                        //Console.WriteLine(outPacket);
-                        //Thread.Sleep(1000);
                         TXstate = 4; //move to next state
                         break;
-                    case 4: // stay in case 4 until entire packet is sent 
-                        //if (index == packetLen)// when entire packet is sent check interval
+                    case 4: // send the completed packet, then wait for the next interval
                         {
-                            outBTpacket = outPacket.Substring(0,10);
+                            outBTpacket = outPacket.Substring(0, 10);
                             sendBTpacket = true;
                             //packetCharacteristic.SetValue(outBTpacket);
-                            Console.WriteLine(outBTpacket);
-                            var buffer = new byte[39];
-                            buffer = Encoding.UTF8.GetBytes(outPacket);
+                            Resolver.Log.Info(outBTpacket);
+                            var buffer = Encoding.UTF8.GetBytes(outPacket);
                             serialPort.Write(buffer);
-                            Thread.Sleep(packetTime);
+                            await Task.Delay(packetTime);
 
                             TXstate = 0; //reset the state when the whole packet is sent
                         }
@@ -306,4 +289,3 @@ namespace meadowBTport
 
     }
 }
-
