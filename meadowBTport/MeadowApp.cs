@@ -154,7 +154,7 @@ namespace meadowBTport
             packetCharacteristic = new CharacteristicString(
                 name: "newBTpacket",
                 uuid: packetCharcteristicName,
-                maxLength: 20,
+                maxLength: 40,
                 permissions: CharacteristicPermission.Read | CharacteristicPermission.Write,
                 properties: CharacteristicProperty.Read | CharacteristicProperty.Write
                 //permissions: CharacteristicPermission.Read,
@@ -281,9 +281,9 @@ namespace meadowBTport
                         break;
                     case 4: // send the completed packet, then wait for the next interval
                         {
-                            outBTpacket = outPacket.Substring(0, 10);
+                            outBTpacket = outPacket.Substring(0, 39);
                             sendBTpacket = true;
-                            //packetCharacteristic.SetValue(outBTpacket);
+                            packetCharacteristic.SetValue(outBTpacket);
                             Resolver.Log.Info(outBTpacket);
                             var buffer = Encoding.UTF8.GetBytes(outPacket);
                             serialPort.Write(buffer);
