@@ -1,4 +1,48 @@
-﻿using System;
+﻿// =====================================================================================
+//  meadowBTport - Meadow F7 Feather V2 solar data sender (Bluetooth LE + serial)
+// =====================================================================================
+//  Every second this app reads 6 analog inputs and 4 digital inputs, builds one text
+//  packet and sends it two ways:
+//    [BLUETOOTH] stores it in a BLE characteristic that MauiMVVMbt20261018 reads
+//    [SERIAL]    writes it to the COM1 UART (the original serial path used by MauiMvvmUSB)
+//
+//  Tags used in the comments (search for them):
+//    [BLUETOOTH]  BLE GATT server: definition, packet characteristic, ValueSet handler
+//    [SERIAL]     COM1 UART: sends packets, receives output-control packets for D06-D09
+//    [ANALOG]     A00-A05 analog inputs, in millivolts
+//    [DIGITAL]    D02-D05 inputs and D06-D09 outputs
+//    [PACKET]     building the packet (the state machine in SendLoop)
+//    [LED]        onboard RGB LED heartbeat
+//
+//  FILES
+//    MeadowApp.cs          this file - all of the application code
+//    meadowBTport.csproj   Meadow project: netstandard2.1 library named "App" plus the Meadow packages
+//    meadow.config.yaml    device settings (Device Name: MeadowSolar)
+//    app.config.yaml       app lifecycle (restart on failure) and logging level
+//    wifi.config.yaml      Wi-Fi credentials - all commented out, not used (BLE does not need Wi-Fi)
+//    .vscode/launch.json   VS Code "Deploy" configuration for the Meadow extension
+//
+//  DEPENDENCIES
+//    Meadow.Sdk (project SDK)  builds and deploys the app to a Meadow board
+//    Meadow.F7                 F7FeatherV2 device: pins, analog/digital ports, serial port,
+//                              and Device.BluetoothAdapter
+//    Meadow.Foundation         peripheral drivers - here RgbPwmLed for the onboard LED
+//    Hardware: Meadow F7 Feather V2. Bluetooth runs on its ESP32 coprocessor; if the
+//    adapter is not available the BLE server is not started (serial still works).
+//
+//  PACKET (39 characters, the same over Bluetooth and serial)
+//    ###     nnn       AAAA x 6         bbbb       CHK        \r\n
+//    header  packet #  A00-A05 in mV    D02-D05    checksum   end of packet
+//    checksum = sum of the characters from the packet number to the last digital bit, mod 1000
+//
+//  BLUETOOTH PROTOCOL (read by MauiMVVMbt20261018 - its Utils/BleConstants.cs must match)
+//    Advertised name "MeadowSolar", service 125, characteristic 5a5a5a56-69ab-4a49-a2f2-de5b292458f3
+//    ("newBTpacket": string, max 40 characters, Read | Write, no Notify).
+//    The client writes anything to the characteristic, then reads it back: the ValueSet
+//    handler puts the latest packet back into the characteristic after each write.
+// =====================================================================================
+
+using System;
 using System.Text;
 using System.Threading.Tasks;
 using Meadow;
@@ -13,19 +57,24 @@ namespace meadowBTport
 {
     public class MeadowApp : App<F7FeatherV2>
     {
+        // [BLUETOOTH] GATT server definition and the characteristic that holds the latest packet
         Definition bleTreeDefinition;
         CharacteristicString packetCharacteristic;
 
         readonly string packetCharcteristicName = "5a5a5a5669ab4a49a2f2de5b292458f3";
 
+        // [LED]
         RgbPwmLed onboardLed;                          //onboard RGB LED, toggled red/green as a "packet sent" heartbeat
         
         bool LEDisRed = false;                         //tracks heartbeat LED color so we can alternate it
 
+        // [SERIAL] COM1 UART to the PC
         ISerialPort serialPort;
+        // [ANALOG] latest reading of each input as a 4-digit millivolt string, e.g. "1650"
         string milliVolts00 = "0000", milliVolts01 = "0000", milliVolts02 = "0000",
                milliVolts03 = "0000", milliVolts04 = "0000", milliVolts05 = "0000";
 
+        // [ANALOG] analog input ports A00-A05
         IObservableAnalogInputPort analogIn00;
         IObservableAnalogInputPort analogIn01;
         IObservableAnalogInputPort analogIn02;
@@ -33,6 +82,7 @@ namespace meadowBTport
         IObservableAnalogInputPort analogIn04;
         IObservableAnalogInputPort analogIn05;
 
+        // [DIGITAL] D02-D05 inputs (sent in the packet), D06-D09 outputs (set by the serial control packet)
         IDigitalInputPort inputPortD02;
         IDigitalInputPort inputPortD03;
         IDigitalInputPort inputPortD04;
@@ -42,6 +92,7 @@ namespace meadowBTport
         IDigitalOutputPort outputPortD08;
         IDigitalOutputPort outputPortD09;
 
+        // [PACKET] packet builder state used by SendLoop
         private int packetNumber;
         private int analogPin;
         private int digitalPin;
@@ -52,15 +103,18 @@ namespace meadowBTport
         private int index = 0;
         private int TXstate = 0;
         private String outPacket = "###P##AN00AN01AN02AN03AN04AN05bbbbCHKrn";
+        // [BLUETOOTH] copy of the last complete packet, served by the characteristic
         private String outBTpacket = "###P##AN00AN01AN02AN03AN04AN05bbbbCHKrn";
         private String inPacket;
         private int packetTime = 1000;
+        // [BLUETOOTH] set when a new packet is ready (not currently used to gate the reply)
         private bool sendBTpacket = true;
 
         public override async Task Initialize()
         {
             Resolver.Log.Info("Initialize hardware...");
 
+            // ---------- [LED] ----------
             //set up the onboard RGB LED (common-anode wiring on the F7 Feather)
             onboardLed = new RgbPwmLed(
                 redPwmPin: Device.Pins.OnboardLedRed,
@@ -68,6 +122,7 @@ namespace meadowBTport
                 bluePwmPin: Device.Pins.OnboardLedBlue,
                 CommonType.CommonAnode);
 
+            // ---------- [BLUETOOTH] build the GATT tree and start the BLE server (needs the ESP32 coprocessor) ----------
             bleTreeDefinition = GetDefinition();
             if (Device.BluetoothAdapter == null)
             {
@@ -77,6 +132,7 @@ namespace meadowBTport
             {
                 Device.BluetoothAdapter.StartBluetoothServer(bleTreeDefinition);
             }
+            // [BLUETOOTH] reply to every client write with the latest packet
             packetCharacteristic.ValueSet += PacketCharacteristic_ValueSet;
 
             //onboardLed = new RgbPwmLed(
@@ -86,6 +142,7 @@ namespace meadowBTport
             //    CommonType.CommonAnode);
             inPacket = "";
 
+            // ---------- [ANALOG] and [DIGITAL] ports ----------
             // 5 samples averaged, 40 ms apart, 3.3 V reference (same as the original defaults)
             analogIn00 = Device.CreateAnalogInputPort(Device.Pins.A00, 5);
             analogIn01 = Device.CreateAnalogInputPort(Device.Pins.A01, 5);
@@ -101,6 +158,7 @@ namespace meadowBTport
             outputPortD07 = Device.CreateDigitalOutputPort(Device.Pins.D07, false);
             outputPortD08 = Device.CreateDigitalOutputPort(Device.Pins.D08, false);
             outputPortD09 = Device.CreateDigitalOutputPort(Device.Pins.D09, false);
+            // [DIGITAL] startup test: turn the outputs on one at a time
             await Task.Delay(200);
             outputPortD06.State = true;
             await Task.Delay(200);
@@ -110,10 +168,12 @@ namespace meadowBTport
             await Task.Delay(200);
             outputPortD09.State = true;
 
+            // ---------- [SERIAL] COM1 UART at 115200 baud ----------
             serialPort = Device.CreateSerialPort(Device.PlatformOS.GetSerialPortName("COM1"), 115200);
             serialPort.Open();
             serialPort.DataReceived += SerialPort_DataReceived;
 
+            // ---------- [ANALOG] read every 100 ms; the Updated handlers store the latest millivolts ----------
             analogIn00.Updated += AnalogIn00_Updated;
             analogIn01.Updated += AnalogIn01_Updated;
             analogIn02.Updated += AnalogIn02_Updated;
@@ -131,6 +191,7 @@ namespace meadowBTport
             await base.Initialize();
         }
 
+        // [PACKET] Run starts the send loop, which never returns
         public override Task Run()
         {
             Resolver.Log.Info("Run...");
@@ -138,6 +199,9 @@ namespace meadowBTport
             return SendLoop();
         }
 
+        // [BLUETOOTH] Called when a client (MauiMVVMbt20261018) writes to the characteristic.
+        // The write replaced the value with the client's data, so put the latest packet back
+        // for the client's next read.
         private void PacketCharacteristic_ValueSet(ICharacteristic c, object data)
         {
             //if (sendBTpacket)
@@ -148,6 +212,8 @@ namespace meadowBTport
 
         }
 
+        // [BLUETOOTH] GATT tree: device "MeadowSolar" -> service 125 -> string characteristic "newBTpacket".
+        // The name and UUIDs must match Utils/BleConstants.cs in MauiMVVMbt20261018.
         private Definition GetDefinition()
         {
 
@@ -168,6 +234,7 @@ namespace meadowBTport
             return new Definition("MeadowSolar", service);
         }
 
+        // [ANALOG] Updated handlers: convert each reading to a 4-digit millivolt string for the packet
         private void AnalogIn00_Updated(object sender, IChangeResult<Voltage> e)
         {
             //Resolver.Log.Info($"{e.New.Millivolts}");
@@ -203,6 +270,8 @@ namespace meadowBTport
         }
 
 
+        // [SERIAL] Receives a 12-byte control packet from the PC: "###" + 4 bits ('1' = on) + 3-digit
+        // checksum + \r\n, and sets outputs D06-D09 [DIGITAL]. Bluetooth does not use this (yet).
         private void SerialPort_DataReceived(object sender, SerialDataReceivedEventArgs e)
         {
             int calChkSum = 0;
@@ -231,6 +300,8 @@ namespace meadowBTport
             }
         }
 
+        // [PACKET] Builds a packet in steps (TXstate 0-3), sends it (TXstate 4),
+        // waits packetTime ms, then starts over.
         private async Task SendLoop()
         {
             Resolver.Log.Info("Sending Data");
@@ -281,12 +352,15 @@ namespace meadowBTport
                         break;
                     case 4: // send the completed packet, then wait for the next interval
                         {
+                            // [BLUETOOTH] store the packet in the characteristic so the next client read gets it
                             outBTpacket = outPacket.Substring(0, 39);
                             sendBTpacket = true;
                             packetCharacteristic.SetValue(outBTpacket);
                             Resolver.Log.Info(outBTpacket);
+                            // [SERIAL] send the same packet on COM1
                             var buffer = Encoding.UTF8.GetBytes(outPacket);
                             serialPort.Write(buffer);
+                            // [LED] toggle red/green so you can see packets going out
                             if (LEDisRed)
                             {
                                 onboardLed.SetColor(Color.Green);
