@@ -38,8 +38,11 @@
 //  BLUETOOTH PROTOCOL (read by MauiMVVMbt20261018 - its Utils/BleConstants.cs must match)
 //    Advertised name "MeadowSolar", service 125, characteristic 5a5a5a56-69ab-4a49-a2f2-de5b292458f3
 //    ("newBTpacket": string, max 40 characters, Read | Write, no Notify).
-//    The client writes anything to the characteristic, then reads it back: the ValueSet
-//    handler puts the latest packet back into the characteristic after each write.
+//    The client writes to the characteristic, then reads it back: the ValueSet handler
+//    puts the latest packet back into the characteristic after each write.
+//    A write is either a packet request (MauiMVVMbt20261018 writes "R") or an
+//    output-control packet "###bbbbCHK" (same as the serial one, \r\n optional) that
+//    sets D06-D09 - see BluetoothMessage_Received.
 // =====================================================================================
 
 using System;
@@ -201,15 +204,84 @@ namespace meadowBTport
 
         // [BLUETOOTH] Called when a client (MauiMVVMbt20261018) writes to the characteristic.
         // The write replaced the value with the client's data, so put the latest packet back
-        // for the client's next read.
+        // for the client's next read, then check whether the write was an output-control packet.
         private void PacketCharacteristic_ValueSet(ICharacteristic c, object data)
         {
+            BluetoothMessage_Received(BluetoothDataToString(data));
             //if (sendBTpacket)
             {
                 packetCharacteristic.SetValue(outBTpacket);
                 sendBTpacket = false;
             }
 
+        }
+
+        // [BLUETOOTH] BluetoothMessage_Received - RECEIVE side over BLE.
+        // The Bluetooth version of serialMessagePort_DataReceived (MeadowComPortV20241024):
+        // the same control packet, written to the "newBTpacket" characteristic.
+        //
+        //   index:  0  1  2  3  4  5  6  7  8  9  10 11
+        //   char :  #  #  #  b  b  b  b  C  C  C  \r \n
+        //                    |  |  |  |  checksum digits
+        //                    |  |  |  +-- D09 state ('0'/'1')
+        //                    |  |  +----- D08 state
+        //                    |  +-------- D07 state
+        //                    +----------- D06 state
+        //
+        // Checksum = sum of the ASCII values of the 4 state chars
+        // (e.g. "1010" -> 0x31+0x30+0x31+0x30 = 194 -> "194").
+        // \r\n is optional: a BLE write arrives as one complete value, so no delimiter
+        // is needed to find the end of the message (the serial port needs one).
+        // Anything else, such as the "R" packet request, is ignored.
+        // The outputs change only when the header matches AND the checksums agree.
+        private void BluetoothMessage_Received(string RXmessage)
+        {
+            // need at least ### + 4 states + 3 checksum digits = 10 chars;
+            // this length check also stops a short write from crashing the app
+            if (RXmessage == null || RXmessage.Length < 10 || !RXmessage.StartsWith("###"))
+            {
+                return;
+            }
+
+            Resolver.Log.Info($"BT RX: {RXmessage.TrimEnd('\r', '\n')}");   //watch traffic in the Meadow console
+            byte[] response = Encoding.UTF8.GetBytes(RXmessage);        //bytes so we can index individual characters
+
+            int calChkSum = 0;                        //checksum we calculate from the 4 state chars
+            for (int i = 3; i < 7; i++)
+            {
+                calChkSum += response[i];
+            }
+            //convert the 3 ASCII checksum digits (chars 7,8,9) to an integer
+            //(subtracting 0x30 converts an ASCII digit to its numeric value)
+            int recChkSum = (response[7] - 0x30) * 100 + (response[8] - 0x30) * 10 + (response[9] - 0x30);
+
+            if (calChkSum == recChkSum)               //only act on the packet if the checksums agree
+            {
+                //'1' (0x31) turns an output on, anything else turns it off
+                outputPortD06.State = response[3] == 0x31;
+                outputPortD07.State = response[4] == 0x31;
+                outputPortD08.State = response[5] == 0x31;
+                outputPortD09.State = response[6] == 0x31;
+            }
+            else
+            {
+                Resolver.Log.Info($"BT RX checksum error: calculated {calChkSum}, received {recChkSum}");
+            }
+        }
+
+        // [BLUETOOTH] a CharacteristicString delivers the written value as a string;
+        // accept raw bytes too, in case a client writes a byte array
+        private static string BluetoothDataToString(object data)
+        {
+            if (data is string text)
+            {
+                return text;
+            }
+            if (data is byte[] bytes)
+            {
+                return Encoding.UTF8.GetString(bytes);
+            }
+            return data?.ToString() ?? "";
         }
 
         // [BLUETOOTH] GATT tree: device "MeadowSolar" -> service 125 -> string characteristic "newBTpacket".
@@ -271,7 +343,7 @@ namespace meadowBTport
 
 
         // [SERIAL] Receives a 12-byte control packet from the PC: "###" + 4 bits ('1' = on) + 3-digit
-        // checksum + \r\n, and sets outputs D06-D09 [DIGITAL]. Bluetooth does not use this (yet).
+        // checksum + \r\n, and sets outputs D06-D09 [DIGITAL]. BluetoothMessage_Received does the same over BLE.
         private void SerialPort_DataReceived(object sender, SerialDataReceivedEventArgs e)
         {
             int calChkSum = 0;
