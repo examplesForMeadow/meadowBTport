@@ -119,7 +119,7 @@ namespace meadowBTport
         // [BLUETOOTH] copy of the last complete packet, served by the characteristic
         private String outBTpacket = "###P##AN00AN01AN02AN03AN04AN05bbbbCHKrn";
         private String inPacket;
-        private int packetTime = 1000;
+        private int packetTime = 100;
         // [BLUETOOTH] set when a new packet is ready (not currently used to gate the reply)
         private bool sendBTpacket = true;
 
