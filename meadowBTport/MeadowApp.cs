@@ -6,8 +6,13 @@
 //    [BLUETOOTH] stores it in a BLE characteristic that MauiMVVMbt20261018 reads
 //    [SERIAL]    writes it to the COM1 UART (the original serial path used by MauiMvvmUSB)
 //
+//  It also receives output-control packets that turn D06-D09 on and off:
+//    [RECEIVE]   over Bluetooth, from the Send button in MauiMVVMbt20261018
+//    [SERIAL]    over COM1, from the USB apps
+//
 //  Tags used in the comments (search for them):
 //    [BLUETOOTH]  BLE GATT server: definition, packet characteristic, ValueSet handler
+//    [RECEIVE]    Bluetooth receive: control packets written to the characteristic set D06-D09
 //    [SERIAL]     COM1 UART: sends packets, receives output-control packets for D06-D09
 //    [ANALOG]     A00-A05 analog inputs, in millivolts
 //    [DIGITAL]    D02-D05 inputs and D06-D09 outputs
@@ -34,6 +39,11 @@
 //    ###     nnn       AAAA x 6         bbbb       CHK        \r\n
 //    header  packet #  A00-A05 in mV    D02-D05    checksum   end of packet
 //    checksum = sum of the characters from the packet number to the last digital bit, mod 1000
+//
+//  CONTROL PACKET (PC or phone -> Meadow, sets outputs D06-D09)
+//    ###     bbbb             CHK        \r\n
+//    header  D06 D07 D08 D09  checksum   end (required on serial, optional over Bluetooth)
+//    checksum = sum of the ASCII values of the 4 state chars, e.g. "1111" -> 4 x 0x31 = 196
 //
 //  BLUETOOTH PROTOCOL (read by MauiMVVMbt20261018 - its Utils/BleConstants.cs must match)
 //    Advertised name "MeadowSolar", service 125, characteristic 5a5a5a56-69ab-4a49-a2f2-de5b292458f3
@@ -85,7 +95,7 @@ namespace meadowBTport
         IObservableAnalogInputPort analogIn04;
         IObservableAnalogInputPort analogIn05;
 
-        // [DIGITAL] D02-D05 inputs (sent in the packet), D06-D09 outputs (set by the serial control packet)
+        // [DIGITAL] D02-D05 inputs (sent in the packet), D06-D09 outputs (set by the serial or Bluetooth control packet)
         IDigitalInputPort inputPortD02;
         IDigitalInputPort inputPortD03;
         IDigitalInputPort inputPortD04;
@@ -135,7 +145,8 @@ namespace meadowBTport
             {
                 Device.BluetoothAdapter.StartBluetoothServer(bleTreeDefinition);
             }
-            // [BLUETOOTH] reply to every client write with the latest packet
+            // [BLUETOOTH] reply to every client write with the latest packet,
+            // [RECEIVE] and check each write for a control packet
             packetCharacteristic.ValueSet += PacketCharacteristic_ValueSet;
 
             //onboardLed = new RgbPwmLed(
@@ -207,6 +218,7 @@ namespace meadowBTport
         // for the client's next read, then check whether the write was an output-control packet.
         private void PacketCharacteristic_ValueSet(ICharacteristic c, object data)
         {
+            // [RECEIVE] a control packet sets D06-D09; anything else (the "R" request) is ignored
             BluetoothMessage_Received(BluetoothDataToString(data));
             //if (sendBTpacket)
             {
@@ -216,7 +228,7 @@ namespace meadowBTport
 
         }
 
-        // [BLUETOOTH] BluetoothMessage_Received - RECEIVE side over BLE.
+        // [BLUETOOTH] [RECEIVE] BluetoothMessage_Received - RECEIVE side over BLE.
         // The Bluetooth version of serialMessagePort_DataReceived (MeadowComPortV20241024):
         // the same control packet, written to the "newBTpacket" characteristic.
         //
@@ -269,7 +281,7 @@ namespace meadowBTport
             }
         }
 
-        // [BLUETOOTH] a CharacteristicString delivers the written value as a string;
+        // [BLUETOOTH] [RECEIVE] a CharacteristicString delivers the written value as a string;
         // accept raw bytes too, in case a client writes a byte array
         private static string BluetoothDataToString(object data)
         {
