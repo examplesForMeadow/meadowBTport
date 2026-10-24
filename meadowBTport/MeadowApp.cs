@@ -1,9 +1,9 @@
 ﻿// =====================================================================================
 //  meadowBTport - Meadow F7 Feather V2 solar data sender (Bluetooth LE + serial)
 // =====================================================================================
-//  Every second this app reads 6 analog inputs and 4 digital inputs, builds one text
-//  packet and sends it two ways:
-//    [BLUETOOTH] stores it in a BLE characteristic that MauiMVVMbt20261018 reads
+//  Every packetTime ms (100 ms = 10 packets a second) this app reads 6 analog inputs and
+//  4 digital inputs, builds one text packet and sends it two ways:
+//    [BLUETOOTH] stores it in a BLE characteristic, which notifies MauiMVVMbt20261018
 //    [SERIAL]    writes it to the COM1 UART (the original serial path used by MauiMvvmUSB)
 //
 //  It also receives output-control packets that turn D06-D09 on and off:
@@ -47,12 +47,16 @@
 //
 //  BLUETOOTH PROTOCOL (read by MauiMVVMbt20261018 - its Utils/BleConstants.cs must match)
 //    Advertised name "MeadowSolar", service 125, characteristic 5a5a5a56-69ab-4a49-a2f2-de5b292458f3
-//    ("newBTpacket": string, max 40 characters, Read | Write, no Notify).
-//    The client writes to the characteristic, then reads it back: the ValueSet handler
-//    puts the latest packet back into the characteristic after each write.
-//    A write is either a packet request (MauiMVVMbt20261018 writes "R") or an
-//    output-control packet "###bbbbCHK" (same as the serial one, \r\n optional) that
-//    sets D06-D09 - see BluetoothMessage_Received.
+//    ("newBTpacket": string, max 40 characters, Read | Write | Notify).
+//    NOTIFY: the client subscribes once; every SetValue in SendLoop then pushes the new
+//    packet to it, 10 times a second, without the client asking. A notification carries
+//    at most MTU - 3 bytes, so the client must have an MTU of at least 42 for the 39-byte
+//    packet (MauiMVVMbt20261018 asks for one when it connects).
+//    READ still works too: a client can read the latest packet at any time.
+//    WRITE: an output-control packet "###bbbbCHK" (same as the serial one, \r\n optional)
+//    sets D06-D09 - see BluetoothMessage_Received. Anything else written (such as the "R"
+//    request older versions of the app sent) is ignored. After any write the ValueSet
+//    handler puts the latest packet back, which also notifies it again.
 // =====================================================================================
 
 using System;
@@ -157,13 +161,16 @@ namespace meadowBTport
             inPacket = "";
 
             // ---------- [ANALOG] and [DIGITAL] ports ----------
-            // 5 samples averaged, 40 ms apart, 3.3 V reference (same as the original defaults)
-            analogIn00 = Device.CreateAnalogInputPort(Device.Pins.A00, 5);
-            analogIn01 = Device.CreateAnalogInputPort(Device.Pins.A01, 5);
-            analogIn02 = Device.CreateAnalogInputPort(Device.Pins.A02, 5);
-            analogIn03 = Device.CreateAnalogInputPort(Device.Pins.A03, 5);
-            analogIn04 = Device.CreateAnalogInputPort(Device.Pins.A04, 5);
-            analogIn05 = Device.CreateAnalogInputPort(Device.Pins.A05, 5);
+            // [ANALOG] 5 samples averaged, 10 ms apart = 50 ms per reading, so a new reading is
+            // ready every 100 ms update and every packet carries fresh values.
+            // (The defaults are 40 ms apart = 200 ms per reading, too slow for 10 packets a second.)
+            TimeSpan analogSampleInterval = TimeSpan.FromMilliseconds(10);
+            analogIn00 = Device.CreateAnalogInputPort(Device.Pins.A00, 5, analogSampleInterval);
+            analogIn01 = Device.CreateAnalogInputPort(Device.Pins.A01, 5, analogSampleInterval);
+            analogIn02 = Device.CreateAnalogInputPort(Device.Pins.A02, 5, analogSampleInterval);
+            analogIn03 = Device.CreateAnalogInputPort(Device.Pins.A03, 5, analogSampleInterval);
+            analogIn04 = Device.CreateAnalogInputPort(Device.Pins.A04, 5, analogSampleInterval);
+            analogIn05 = Device.CreateAnalogInputPort(Device.Pins.A05, 5, analogSampleInterval);
             inputPortD02 = Device.CreateDigitalInputPort(Device.Pins.D02, ResistorMode.Disabled);
             inputPortD03 = Device.CreateDigitalInputPort(Device.Pins.D03, ResistorMode.Disabled);
             inputPortD04 = Device.CreateDigitalInputPort(Device.Pins.D04, ResistorMode.Disabled);
@@ -215,7 +222,8 @@ namespace meadowBTport
 
         // [BLUETOOTH] Called when a client (MauiMVVMbt20261018) writes to the characteristic.
         // The write replaced the value with the client's data, so put the latest packet back
-        // for the client's next read, then check whether the write was an output-control packet.
+        // (this also notifies it again - the app counts it as a duplicate), then check whether
+        // the write was an output-control packet.
         private void PacketCharacteristic_ValueSet(ICharacteristic c, object data)
         {
             // [RECEIVE] a control packet sets D06-D09; anything else (the "R" request) is ignored
@@ -306,7 +314,13 @@ namespace meadowBTport
                 uuid: packetCharcteristicName,
                 maxLength: 40,
                 permissions: CharacteristicPermission.Read | CharacteristicPermission.Write,
-                properties: CharacteristicProperty.Read | CharacteristicProperty.Write
+                // [BLUETOOTH] Notify: every SetValue pushes the new packet to subscribed clients
+                properties: CharacteristicProperty.Read | CharacteristicProperty.Write | CharacteristicProperty.Notify,
+                // [BLUETOOTH] Notify also needs the CCCD descriptor (Client Characteristic
+                // Configuration, UUID 0x2902). A client subscribes by WRITING 1 to it, so without it
+                // StartUpdatesAsync fails with "Write Not Permitted". Meadow's Descriptor class
+                // always creates a read/write CCCD (see Descriptor.ToJson in Meadow.Core).
+                descriptors: new Descriptor[] { new Descriptor("00002902-0000-1000-8000-00805f9b34fb", 0) }
                 //permissions: CharacteristicPermission.Read,
                 //properties: CharacteristicProperty.Read
                 );
@@ -436,10 +450,12 @@ namespace meadowBTport
                         break;
                     case 4: // send the completed packet, then wait for the next interval
                         {
-                            // [BLUETOOTH] store the packet in the characteristic so the next client read gets it
+                            // [BLUETOOTH] store the packet in the characteristic; with Notify this
+                            // pushes it to every subscribed client (10 times a second)
                             outBTpacket = outPacket.Substring(0, 39);
                             sendBTpacket = true;
                             packetCharacteristic.SetValue(outBTpacket);
+                            // logs 10 lines a second at packetTime = 100 - comment out for timing tests
                             Resolver.Log.Info(outBTpacket);
                             // [SERIAL] send the same packet on COM1
                             var buffer = Encoding.UTF8.GetBytes(outPacket);
