@@ -474,7 +474,7 @@ namespace meadowBTport
                             sendBTpacket = true;
                             packetCharacteristic.SetValue(outBTpacket);
                             // logs 10 lines a second at packetTime = 100 - comment out for timing tests
-                            Resolver.Log.Info(outBTpacket);
+                            //Resolver.Log.Info(outBTpacket);
                             // [SERIAL] send the same packet on COM1
                             var buffer = Encoding.UTF8.GetBytes(outPacket);
                             serialPort.Write(buffer);
