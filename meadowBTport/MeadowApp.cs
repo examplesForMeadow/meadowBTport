@@ -16,7 +16,7 @@
 //    [SERIAL]     COM1 UART: sends packets, receives output-control packets for D06-D09
 //    [ANALOG]     A00-A05 analog inputs, in millivolts
 //    [DIGITAL]    D02-D05 inputs and D06-D09 outputs
-//    [PACKET]     building the packet (the state machine in SendLoop)
+//    [PACKET]     building the packet (the state machine in SendLoop) and its 100 ms timing
 //    [LED]        onboard RGB LED heartbeat
 //
 //  FILES
@@ -45,13 +45,26 @@
 //    header  D06 D07 D08 D09  checksum   end (required on serial, optional over Bluetooth)
 //    checksum = sum of the ASCII values of the 4 state chars, e.g. "1111" -> 4 x 0x31 = 196
 //
+//  CHANGES (October 2026) - from polling at 1 packet a second to notifications at 10
+//    - Notify added to the characteristic, plus the CCCD descriptor that lets clients
+//      subscribe (without it: "Write Not Permitted")                         [BLUETOOTH]
+//    - packetTime 1000 -> 100 ms, and SendLoop now waits only for the rest of each period
+//      (Stopwatch), so the rate stays at 10 a second instead of about 9.2    [PACKET]
+//    - analog sample interval 40 -> 10 ms (5 samples = 50 ms per reading), so every
+//      100 ms packet has fresh readings                                      [ANALOG]
+//    - BluetoothMessage_Received: control packets written over Bluetooth set D06-D09 [RECEIVE]
+//
 //  BLUETOOTH PROTOCOL (read by MauiMVVMbt20261018 - its Utils/BleConstants.cs must match)
 //    Advertised name "MeadowSolar", service 125, characteristic 5a5a5a56-69ab-4a49-a2f2-de5b292458f3
 //    ("newBTpacket": string, max 40 characters, Read | Write | Notify).
 //    NOTIFY: the client subscribes once; every SetValue in SendLoop then pushes the new
 //    packet to it, 10 times a second, without the client asking. A notification carries
-//    at most MTU - 3 bytes, so the client must have an MTU of at least 42 for the 39-byte
-//    packet (MauiMVVMbt20261018 asks for one when it connects).
+//    at most MTU - 3 bytes, so a whole 39-byte packet needs an MTU of 42 or more.
+//    Tested on Windows, the Meadow's ESP32 stays at MTU 23: a notification then carries only
+//    the first 20 bytes, and MauiMVVMbt20261018 reads the characteristic to get the whole packet
+//    (a read can be longer than the MTU - it is fetched in pieces).
+//    CCCD: Notify needs the Client Characteristic Configuration descriptor (0x2902). A client
+//    subscribes by writing to it, so GetDefinition adds one (see the Descriptor there).
 //    READ still works too: a client can read the latest packet at any time.
 //    WRITE: an output-control packet "###bbbbCHK" (same as the serial one, \r\n optional)
 //    sets D06-D09 - see BluetoothMessage_Received. Anything else written (such as the "R"
@@ -60,6 +73,7 @@
 // =====================================================================================
 
 using System;
+using System.Diagnostics;
 using System.Text;
 using System.Threading.Tasks;
 using Meadow;
@@ -124,6 +138,10 @@ namespace meadowBTport
         private String outBTpacket = "###P##AN00AN01AN02AN03AN04AN05bbbbCHKrn";
         private String inPacket;
         private int packetTime = 100;
+        // [PACKET] timing: the loop waits only for what is left of each packetTime period
+        // (see case 4), so packets go out every 100 ms however long building/sending takes
+        private readonly Stopwatch packetClock = Stopwatch.StartNew();
+        private long nextPacketTime = 0;   // packetClock time (ms) when the next packet is due
         // [BLUETOOTH] set when a new packet is ready (not currently used to gate the reply)
         private bool sendBTpacket = true;
 
@@ -398,8 +416,8 @@ namespace meadowBTport
             }
         }
 
-        // [PACKET] Builds a packet in steps (TXstate 0-3), sends it (TXstate 4),
-        // waits packetTime ms, then starts over.
+        // [PACKET] Builds a packet in steps (TXstate 0-3), sends it (TXstate 4), waits for
+        // the rest of the packetTime period (timed with packetClock), then starts over.
         private async Task SendLoop()
         {
             Resolver.Log.Info("Sending Data");
@@ -471,7 +489,15 @@ namespace meadowBTport
                                 onboardLed.SetColor(Color.Red);
                                 LEDisRed = true;
                             }
-                            await Task.Delay(packetTime);
+                            // [PACKET] wait for the rest of this period, not a full packetTime:
+                            // a fixed Task.Delay(100) plus ~8 ms of work gave only 9.2 packets/s.
+                            // Scheduling against a clock also cancels Task.Delay's own overshoot.
+                            nextPacketTime += packetTime;
+                            int wait = (int)(nextPacketTime - packetClock.ElapsedMilliseconds);
+                            if (wait > 0)
+                                await Task.Delay(wait);
+                            else
+                                nextPacketTime = packetClock.ElapsedMilliseconds;   // fell behind (or first packet): restart the schedule
 
                             TXstate = 0; //reset the state when the whole packet is sent
                         }
