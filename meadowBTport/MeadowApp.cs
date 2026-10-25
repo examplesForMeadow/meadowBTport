@@ -60,8 +60,10 @@
 //    NOTIFY: the client subscribes once; every SetValue in SendLoop then pushes the new
 //    packet to it, 10 times a second, without the client asking. A notification carries
 //    at most MTU - 3 bytes, so a whole 39-byte packet needs an MTU of 42 or more.
-//    Tested on Windows, the Meadow's ESP32 stays at MTU 23: a notification then carries only
-//    the first 20 bytes, and MauiMVVMbt20261018 reads the characteristic to get the whole packet
+//    The Meadow's ESP32 negotiates a large MTU (500 with Android; Windows also receives the
+//    whole 39 bytes, although it reports 23 until its own negotiation finishes). If a link
+//    ever stays at the default MTU 23, a notification carries only the first 20 bytes, and
+//    MauiMVVMbt20261018 reads the characteristic instead, which returns the whole packet
 //    (a read can be longer than the MTU - it is fetched in pieces).
 //    CCCD: Notify needs the Client Characteristic Configuration descriptor (0x2902). A client
 //    subscribes by writing to it, so GetDefinition adds one (see the Descriptor there).
