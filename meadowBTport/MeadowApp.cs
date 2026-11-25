@@ -22,7 +22,7 @@
 //  FILES
 //    MeadowApp.cs          this file - all of the application code
 //    meadowBTport.csproj   Meadow project: netstandard2.1 library named "App" plus the Meadow packages
-//    meadow.config.yaml    device settings (Device Name: MeadowSolar)
+//    meadow.config.yaml    device settings (Device Name: MeadowSolarWM)
 //    app.config.yaml       app lifecycle (restart on failure) and logging level
 //    wifi.config.yaml      Wi-Fi credentials - all commented out, not used (BLE does not need Wi-Fi)
 //    .vscode/launch.json   VS Code "Deploy" configuration for the Meadow extension
@@ -55,7 +55,7 @@
 //    - BluetoothMessage_Received: control packets written over Bluetooth set D06-D09 [RECEIVE]
 //
 //  BLUETOOTH PROTOCOL (read by MauiMVVMbt20261018 - its Utils/BleConstants.cs must match)
-//    Advertised name "MeadowSolar", service 125, characteristic 5a5a5a56-69ab-4a49-a2f2-de5b292458f3
+//    Advertised name "MeadowSolarWM", service 125, characteristic 5a5a5a56-69ab-4a49-a2f2-de5b292458f3
 //    ("newBTpacket": string, max 40 characters, Read | Write | Notify).
 //    NOTIFY: the client subscribes once; every SetValue in SendLoop then pushes the new
 //    packet to it, 10 times a second, without the client asking. A notification carries
@@ -324,7 +324,7 @@ namespace meadowBTport
             return data?.ToString() ?? "";
         }
 
-        // [BLUETOOTH] GATT tree: device "MeadowSolar" -> service 125 -> string characteristic "newBTpacket".
+        // [BLUETOOTH] GATT tree: device "MeadowSolarWM" -> service 125 -> string characteristic "newBTpacket".
         // The name and UUIDs must match Utils/BleConstants.cs in MauiMVVMbt20261018.
         private Definition GetDefinition()
         {
@@ -349,7 +349,7 @@ namespace meadowBTport
                 uuid: 125,
                 packetCharacteristic
                 );
-            return new Definition("MeadowSolar", service);
+            return new Definition("MeadowSolarWM", service);
         }
 
         // [ANALOG] Updated handlers: convert each reading to a 4-digit millivolt string for the packet

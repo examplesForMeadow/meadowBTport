@@ -5,7 +5,7 @@
 Device:
 
     # Name of the device on the network.
-    Name: MeadowSolar
+    Name: MeadowSolarWM
 
     # Uncomment if SD card hardware present on this hardware 
     # (e.g., Core-Compute module with SD add-on)? Optional; default value is `false`.
